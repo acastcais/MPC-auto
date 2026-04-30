@@ -1,0 +1,8 @@
+#aqui se define que tipo de robot se utilizara para luego establecer una conxion
+<?xml version="1.0" ?>
+<robot name="auto_mariposa">
+    <webots>
+        <plugin type="control_mariposa.plugin_turtlebot.TurtleBotPlugin">
+        </plugin>
+    </webots>
+</robot>

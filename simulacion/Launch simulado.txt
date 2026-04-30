@@ -1,0 +1,23 @@
+#inicia todos lo nodos juntos para que simulación funcione
+import os
+from launch import LaunchDescription
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+
+def generate_launch_description():
+    paquete_dir = get_package_share_directory('control_mariposa')
+    urdf_path = os.path.join(paquete_dir, 'urdf', 'robot_mariposa.urdf')
+
+    ip_windows = os.popen("ip route show default | awk '{print $3}'").read().strip()
+
+    driver_webots = Node(
+        package='webots_ros2_driver',
+        executable='driver',
+        output='screen',
+        additional_env={'WEBOTS_CONTROLLER_URL': f'tcp://{ip_windows}:1234/auto_mariposa'},
+        parameters=[
+            {'robot_description': urdf_path},
+        ]
+    )
+
+    return LaunchDescription([driver_webots])

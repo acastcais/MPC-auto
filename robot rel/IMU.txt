@@ -1,0 +1,63 @@
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Pose2D
+import numpy as np
+from smbus import SMBus
+import time
+
+class ImuNode(Node):
+    def __init__(self):
+        super().__init__('imu_node')
+        self.publisher = self.create_publisher(Pose2D, '/pose_actual', 10)
+
+        # configuración hardware imu
+        self.MPU_ADDR = 0x68
+        self.bus = SMBus(1)
+        self.bus.write_byte_data(self.MPU_ADDR, 0x6B, 0) # Despertar MPU
+
+        # calibración simple
+        self.get_logger().info('Calibrando MPU6050...')
+        self.offset = self.calcular_offset()
+        self.theta = 0.0
+        self.prev_time = time.time()
+
+        # timer de ROS 2 (se ejecuta cada 0.01s = 100Hz) no olvidar
+        self.timer = self.create_timer(0.01, self.timer_callback)
+        self.get_logger().info('Nodo IMU listo.')
+
+    def read_word(self, reg):
+        high = self.bus.read_byte_data(self.MPU_ADDR, reg)
+        low = self.bus.read_byte_data(self.MPU_ADDR, reg+1)
+        value = (high << 8) + low
+        return value if value < 0x8000 else -((65535 - value) + 1)
+
+    def calcular_offset(self):
+        samples = 200
+        total = 0.0
+        for _ in range(samples):
+            total += self.read_word(0x47) / 131.0
+            time.sleep(0.005)
+        return total / samples
+
+    def timer_callback(self):
+        # lee los sensores
+        gz = (self.read_word(0x47) / 131.0) - self.offset
+
+        # calcular dt e integrar
+        current_time = time.time()
+        dt = current_time - self.prev_time
+        self.prev_time = current_time
+
+        self.theta += gz * dt # integración simple
+
+        # publicar, enviar o como lo ponia en la pagina
+        msg = Pose2D()
+        msg.x = 0.0
+        msg.y = 0.0
+        msg.theta = np.radians(self.theta)
+        self.publisher.publish(msg)
+
+def main(args=None):
+    rclpy.init(args=args)
+    rclpy.spin(ImuNode())
+    rclpy.shutdown()

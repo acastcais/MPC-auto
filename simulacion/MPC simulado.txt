@@ -1,0 +1,141 @@
+#aqui están las matrices de costo como las ecuaciones de la trayectoria
+import os
+import sys
+import warnings
+warnings.filterwarnings("ignore")
+
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist, Pose2D
+import numpy as np
+from scipy.optimize import minimize
+
+class ControladorMPC(Node):
+    def __init__(self):
+        super().__init__('cerebro_mpc')
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.pose_sub = self.create_subscription(Pose2D, '/pose_actual', self.pose_callback, 10)
+
+        self.x = 0.0
+        self.y = 0.0
+        self.theta = 0.0
+        self.pose_recibida = False
+
+        self.Np = 10
+        self.dt = 0.1
+
+        self.Q_xy = 100.0
+        self.Q_th = 10.0
+        self.R_v = 1.0
+        self.R_w = 1.0
+
+        self.v_bounds = (0.0, 0.15)
+        self.w_bounds = (-1.5, 1.5)
+
+        paso_t = 0.005
+        t = np.arange(0, 24 * np.pi, paso_t)
+        r = np.exp(np.cos(t)) - 2 * np.cos(4 * t) - np.sin(t / 12)**5
+
+        escala = 1.0
+        self.ref_x = r * np.sin(t) * escala
+        self.ref_y = r * np.cos(t) * escala
+
+        dx = np.gradient(self.ref_x, t)
+        dy = np.gradient(self.ref_y, t)
+        ddx = np.gradient(dx, t)
+        ddy = np.gradient(dy, t)
+
+        vel_escala = paso_t / self.dt
+        self.ref_v = np.clip(np.sqrt(dx**2 + dy**2) * vel_escala, 0, 0.15)
+
+        denominador = dx**2 + dy**2
+        denominador[denominador == 0] = 1e-6
+        w_crudo = ((dx * ddy - dy * ddx) / denominador) * vel_escala
+        self.ref_w = np.clip(w_crudo, -1.5, 1.5)
+
+        self.ref_th = np.arctan2(dy, dx)
+
+        self.target_idx = 0
+        self.total_puntos = len(t)
+
+        self.timer = self.create_timer(self.dt, self.control_hibrido_loop)
+        self.get_logger().info('¡Arquitectura Híbrida Inicializada y Ajustada!')
+
+    def pose_callback(self, msg):
+        self.x = msg.x
+        self.y = msg.y
+        self.theta = msg.theta
+        self.pose_recibida = True
+
+    def funcion_costo(self, u, tray_ref, x0, y0, th0):
+        costo = 0.0
+        x, y, th = x0, y0, th0
+        for i in range(self.Np):
+            v = u[2*i]
+            w = u[2*i+1]
+            x += v * np.cos(th) * self.dt
+            y += v * np.sin(th) * self.dt
+            th += w * self.dt
+            xr, yr, thr, vr, wr = tray_ref[i]
+            error_th = np.arctan2(np.sin(th - thr), np.cos(th - thr))
+            costo += self.Q_xy * ((x - xr)**2 + (y - yr)**2)
+            costo += self.Q_th * (error_th**2)
+            costo += self.R_v * (v - vr)**2
+            costo += self.R_w * (w - wr)**2
+        return costo
+
+    def control_hibrido_loop(self):
+        if not self.pose_recibida or self.target_idx >= self.total_puntos:
+            if self.target_idx >= self.total_puntos:
+                self.cmd_pub.publish(Twist())
+                self.get_logger().info('Trayectoria Completada')
+                self.timer.cancel()
+            return
+
+        distancia = np.sqrt((self.x - self.ref_x[self.target_idx])**2 + (self.y - self.ref_y[self.target_idx])**2)
+
+        if distancia > 0.35: 
+            angulo_objetivo = np.arctan2(self.ref_y[self.target_idx] - self.y, self.ref_x[self.target_idx] - self.x)
+            error_th = np.arctan2(np.sin(angulo_objetivo - self.theta), np.cos(angulo_objetivo - self.theta))
+            msg = Twist()
+            if abs(error_th) > 0.2:
+                msg.angular.z = 0.8 * np.sign(error_th)
+                msg.linear.x = 0.0
+            else:
+                msg.angular.z = 0.0
+                msg.linear.x = 0.10
+            self.cmd_pub.publish(msg)
+            return
+
+        tray_ref = []
+        for i in range(self.Np):
+            idx = min(self.target_idx + i, self.total_puntos - 1)
+            tray_ref.append((self.ref_x[idx], self.ref_y[idx], self.ref_th[idx], self.ref_v[idx], self.ref_w[idx]))
+
+        u_initial = np.zeros(2 * self.Np)
+        limites = [self.v_bounds, self.w_bounds] * self.Np
+
+        resultado = minimize(
+            self.funcion_costo, u_initial,
+            args=(tray_ref, self.x, self.y, self.theta),
+            bounds=limites, method='SLSQP'
+        )
+
+        msg = Twist()
+        if resultado.success or (not np.isnan(resultado.x[0])):
+            msg.linear.x = float(resultado.x[0])
+            msg.angular.z = float(resultado.x[1])
+        self.cmd_pub.publish(msg)
+
+        if distancia < 0.40:
+            self.target_idx += 1
+
+def main(args=None):
+    rclpy.init(args=args)
+    nodo = ControladorMPC()
+    rclpy.spin(nodo)
+    nodo.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

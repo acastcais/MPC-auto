@@ -1,0 +1,10 @@
+#inicia simultáneamente los motores, el IMU y el mpc
+from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(package='robot_tesis', executable='driver_motores', name='driver_motores'),
+        Node(package='robot_tesis', executable='control_mpc', name='cerebro_mpc'),
+        Node(package='robot_tesis', executable='nodo_imu', name='imu_node'),
+    ])

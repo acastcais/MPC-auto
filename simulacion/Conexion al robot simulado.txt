@@ -1,0 +1,91 @@
+#sirve para conectarse al robot que se ve en la simulación y se asegura que el MPC sea entendible para el simulador, es como un tipo de traductor
+ecto.py
+import os
+import sys
+
+os.environ['WEBOTS_HOME'] = '/opt/ros/humble'
+
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist, PoseStamped, Pose2D
+from nav_msgs.msg import Path
+from controller import Robot
+
+class ControladorDirecto(Node):
+    def __init__(self, robot_webots):
+        super().__init__('nodo_tortuga_directo')
+        self.robot_webots = robot_webots
+        self.timestep = int(self.robot_webots.getBasicTimeStep())
+
+   
+        self.motor_izq = self.robot_webots.getDevice('left wheel motor')
+        self.motor_der = self.robot_webots.getDevice('right wheel motor')
+        self.motor_izq.setPosition(float('inf'))
+        self.motor_izq.setVelocity(0.0)
+        self.motor_der.setPosition(float('inf'))
+        self.motor_der.setVelocity(0.0)
+
+        self.gps = self.robot_webots.getDevice('gps')
+        self.imu = self.robot_webots.getDevice('imu')
+        if self.gps: self.gps.enable(self.timestep)
+        if self.imu: self.imu.enable(self.timestep)
+
+        self.path_pub = self.create_publisher(Path, '/trayectoria_real', 10)
+        self.pose_pub = self.create_publisher(Pose2D, '/pose_actual', 10) 
+        self.path_msg = Path()
+        self.path_msg.header.frame_id = 'mundo'
+
+        self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+
+        self.radio = 0.033
+        self.sep = 0.160
+
+    def cmd_vel_callback(self, msg):
+        v = msg.linear.x
+        w = msg.angular.z
+        izq = (v - w * self.sep / 2.0) / self.radio
+        der = (v + w * self.sep / 2.0) / self.radio
+        self.motor_izq.setVelocity(izq)
+        self.motor_der.setVelocity(der)
+
+    def ejecutar_bucle(self):
+        while rclpy.ok() and self.robot_webots.step(self.timestep) != -1:
+            if self.gps and self.imu:
+                pos = self.gps.getValues()
+                rpy = self.imu.getRollPitchYaw()
+
+                if not (pos[0] == 0.0 and pos[1] == 0.0):
+                    # Enviar a RViz2 (Visual)
+                    pose_viz = PoseStamped()
+                    pose_viz.header.frame_id = 'mundo'
+                    pose_viz.header.stamp = self.get_clock().now().to_msg()
+                    pose_viz.pose.position.x = pos[0]
+                    pose_viz.pose.position.y = pos[1]
+                    pose_viz.pose.position.z = 0.0
+                    self.path_msg.poses.append(pose_viz)
+                    self.path_pub.publish(self.path_msg)
+
+                    pose_mpc = Pose2D()
+                    pose_mpc.x = pos[0]
+                    pose_mpc.y = pos[1]
+                    pose_mpc.theta = rpy[2] 
+                    self.pose_pub.publish(pose_mpc)
+
+            rclpy.spin_once(self, timeout_sec=0)
+
+def main(args=None):
+    ip_windows = os.popen("ip route show default | awk '{print $3}'").read().strip()
+    os.environ['WEBOTS_CONTROLLER_URL'] = f"tcp://{ip_windows}:1234/auto_mariposa"
+    try:
+        robot_webots = Robot()
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+    rclpy.init(args=args)
+    nodo = ControladorDirecto(robot_webots)
+    nodo.ejecutar_bucle()
+    nodo.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

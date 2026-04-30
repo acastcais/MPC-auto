@@ -1,0 +1,38 @@
+#tiene la lógica de los pin GPIO y PWM para el puente h (ln298n) y convierte los mensajes de cmd_vel a movimiento fisico
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist
+import RPi.GPIO as GPIO
+
+class MotorDriverNode(Node):
+    def __init__(self):
+        super().__init__('motor_driver')
+        self.create_subscription(Twist, '/cmd_vel', self.cmd_callback, 10)
+        GPIO.setwarnings(False)
+        self.ENA, self.IN1, self.IN2 = 18, 23, 24
+        self.ENB, self.IN3, self.IN4 = 19, 25, 8
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup([self.ENA, self.IN1, self.IN2, self.ENB, self.IN3, self.IN4], GPIO.OUT)
+        self.pwmL = GPIO.PWM(self.ENA, 1000)
+        self.pwmR = GPIO.PWM(self.ENB, 1000)
+        self.pwmL.start(0)
+        self.pwmR.start(0)
+
+    def cmd_callback(self, msg):
+        v = msg.linear.x
+        w = msg.angular.z
+        v_l = (v - w) * 100
+        v_r = (v + w) * 100
+        self.set_motor(self.pwmL, self.IN1, self.IN2, v_l)
+        self.set_motor(self.pwmR, self.IN3, self.IN4, v_r)
+
+    def set_motor(self, pwm, pin1, pin2, speed):
+        speed = max(min(speed, 100), -100)
+        GPIO.output(pin1, speed > 0)
+        GPIO.output(pin2, speed < 0)
+        pwm.ChangeDutyCycle(abs(speed))
+
+def main(args=None):
+    rclpy.init(args=args)
+    rclpy.spin(MotorDriverNode())
+    rclpy.shutdown()

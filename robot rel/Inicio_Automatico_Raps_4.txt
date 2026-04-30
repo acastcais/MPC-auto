@@ -1,0 +1,13 @@
+#define las dependencias como que la red este lista y los comandos que debe ejecutar y arrancar
+[Unit]
+Description=Servicio de Inicio Automático Robot Tesis
+After=network.target
+
+[Service]
+Type=simple
+User=machete
+ExecStart=/home/machete/robot_start.sh
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
